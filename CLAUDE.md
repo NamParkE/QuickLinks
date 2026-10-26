@@ -2,7 +2,9 @@
 
 자주 쓰는 폴더·파일·웹 주소 바로가기 위젯. C++ Win32 + Direct2D/DirectWrite, MSVC, 외부 라이브러리 없음, 한국어 UI. 사용법은 [README.md](README.md), 설계와 모든 결정(시안 선택 이유 포함)은 [docs/설계.md](docs/설계.md).
 
-- 로컬: `C:\Users\Administrator\WorkApps\QuickLinks` (아직 git 저장소 아님)
+- 저장소: https://github.com/NamParkE/QuickLinks (비공개, `main`). 릴리즈: v0.1.0 (2026-10-26)
+- 로컬: `C:\Users\Administrator\WorkApps\QuickLinks`
+- 커밋 메시지는 한국어. 커밋·푸시·릴리즈는 사용자가 요청할 때만.
 - 형제 프로젝트: `..\ScanReceiver`(같은 C++ Win32 방식, 코드 스타일 참고), `..\ScreenShot`(C# WPF)
 
 ## 사용자 선호 (지킬 것)
@@ -49,6 +51,12 @@ tests\run_tests.bat            :: 92 passed, 0 failed 여야 함. 끝나면 buil
 - **`key:13`(Enter)은 선택한 항목을 실제로 엶** — `sample.ini`의 실제 경로(`C:\Windows\win.ini` 등)를 고른 채 누르면 사용자 화면에 메모장·탐색기가 뜸(한 번 있었음). Enter 시험은 "없는 폴더 (테스트)"(Down 5번째 줄)에만.
 - `-Win10Fonts`: Windows 11 글꼴이 없는 것처럼 Segoe UI / Segoe MDL2 Assets로 그림(`--win10-fonts`). Windows 10 화면 확인용.
 
+### 릴리즈
+
+1. `QuickLinks.manifest`의 `version`과 zip 이름의 버전을 올림
+2. `build.bat` → `dist\QuickLinks-<버전>-win-x64.zip`에 `build\QuickLinks.exe`와 `README.md`를 넣음 (`dist/`는 git 무시)
+3. `gh release create v<버전> dist\QuickLinks-<버전>-win-x64.zip --title "QuickLinks <버전>" --notes-file <노트>`
+
 ## 구조 메모
 
 - **글꼴**: `PickFonts()`가 시작할 때 있는 글꼴을 고름. Windows 11 = Segoe UI Variable Text/Display + Segoe Fluent Icons, 없으면(Windows 10) Segoe UI + Segoe MDL2 Assets. 아이콘 코드 포인트는 두 글꼴이 같음. 한글은 어느 쪽이든 맑은 고딕으로 자동 대체.
@@ -80,4 +88,4 @@ tests\run_tests.bat            :: 92 passed, 0 failed 여야 함. 끝나면 buil
 - **사용자 확인 필요(자동 확인 불가)**: 마우스 호버 표시와 툴팁, 끌어서 순서·그룹 바꾸기, 탐색기·Chrome/Edge에서 끌어다 놓기(브라우저가 제목을 주는지), 우클릭 메뉴(다크 모드), 트레이 아이콘·메뉴, 창 이동·크기 조절, 다른 DPI 모니터(세로 모니터)로 옮기기.
 - 남은 2단계: 그룹 끌어서 정렬, 전역 단축키(`Ctrl+Alt+Space`), 시작 시 실행, 설정 창.
 - 3단계: 앱 아이콘 시안(지금은 실행 중에 그린 임시 아이콘, exe 파일 아이콘 없음), 메뉴 아이콘, 투명도 UI, 내보내기/가져오기, 미카 재시도, 배포 zip.
-- git 저장소 만들기는 사용자에게 아직 묻지 않음.
+- GitHub 비공개 저장소 생성, v0.1.0 릴리즈 완료(2026-10-26).
