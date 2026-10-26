@@ -3,7 +3,7 @@
 #
 #   & tests\run_ui.ps1 -Out <dir> [-Ini tests\sample.ini] [-Theme light|dark] [-Steps "capture:base","key:40","capture:selected"]
 #
-# Steps: capture:<name> | capslider:<name> | key:<virtual-key> | type:<text> | cmd:<command id> | wait:<ms>
+# Steps: capture:<name> | capslider:<name> | capsettings:<name> | key:<virtual-key> | type:<text> | cmd:<command id> | wait:<ms>
 # Avoid cmd:112 (paste): it reads the user's real clipboard.
 param(
     [Parameter(Mandatory)] [string] $Out,
@@ -34,6 +34,7 @@ try {
         switch ($kind) {
             'capture' { & $tool capture (Join-Path $Out "$arg.png") }
             'capslider' { & $tool capture (Join-Path $Out "$arg.png") slider }
+            'capsettings' { & $tool capture (Join-Path $Out "$arg.png") settings }
             'key' { & $tool key $arg; Start-Sleep -Milliseconds 300 }
             'type' { & $tool type $arg; Start-Sleep -Milliseconds 300 }
             'cmd' { & $tool cmd $arg; Start-Sleep -Milliseconds 400 }

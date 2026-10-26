@@ -1,6 +1,6 @@
 // Test helper for the QuickLinks test instance (started with --config). Build: tools\build_qltool.bat
 //
-//   qltool capture out.png [slider]   the widget's (or its open transparency slider's) on-screen pixels
+//   qltool capture out.png [slider|settings]   the widget's (or its open slider's / settings window's) pixels
 //                                     (screen copy of that window rect only)
 //   qltool cmd <id>          post WM_COMMAND <id> (ids: enum at the top of main.cpp)
 //   qltool key <vk>          post WM_KEYDOWN <vk> to the open slider, else the focused widget control
@@ -65,6 +65,13 @@ int wmain(int argc, wchar_t** argv) {
                 return 1;
             }
             w = slider;
+        } else if (argc > 3 && !wcscmp(argv[3], L"settings")) {
+            HWND s = FindWindowW(L"QuickLinksSettings", nullptr);
+            if (!s || GetWindow(s, GW_OWNER) != w) {
+                fwprintf(stderr, L"no settings window open\n");
+                return 1;
+            }
+            w = s;
         }
         RECT r{};
         if (FAILED(DwmGetWindowAttribute(w, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r))) GetWindowRect(w, &r);

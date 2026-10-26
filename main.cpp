@@ -84,6 +84,8 @@ enum : int {
     IDM_CLOCK_SECONDS, // 130
     IDM_CLOCK_TOP,     // 131
     IDM_CLOCK_BOTTOM,  // 132
+    IDM_SETTINGS,      // 133: the settings window
+    IDM_RUNATLOGON,    // 134: Windows 시작 시 실행
     IDM_MOVETO_NEW = 999,
     IDM_MOVETO = 1000,  // + group index
 };
@@ -103,7 +105,7 @@ constexpr wchar_t kGlyphApp = 0xE8A4, kGlyphPin = 0xE718, kGlyphPinned = 0xE840,
                   kGlyphClose = 0xE711, kGlyphChromeClose = 0xE8BB, kGlyphSearch = 0xE721, kGlyphDown = 0xE96E,
                   kGlyphRight = 0xE970, kGlyphMore = 0xE712, kGlyphWarn = 0xE7BA, kGlyphGlobe = 0xE774,
                   kGlyphFolder = 0xE8B7, kGlyphFile = 0xE8A5, kGlyphUnknown = 0xE9CE, kGlyphNewFolder = 0xE8F4,
-                  kGlyphLink = 0xE71B, kGlyphCalendar = 0xE787;
+                  kGlyphLink = 0xE71B, kGlyphCalendar = 0xE787, kGlyphSettings = 0xE713;
 
 D2D1_COLOR_F Hex(UINT rgb, float a = 1) {
     return D2D1::ColorF(((rgb >> 16) & 255) / 255.f, ((rgb >> 8) & 255) / 255.f, (rgb & 255) / 255.f, a);
@@ -146,6 +148,8 @@ bool SystemUsesDark() {
 
 HINSTANCE g_inst;
 HWND g_wnd, g_search, g_addEdit, g_renameEdit, g_tip;
+HWND g_settingsWnd;  // the settings window while open
+bool g_startup = false;  // --startup: launched by "Windows 시작 시 실행"
 ql::Store g_store;
 std::wstring g_iniPath;
 bool g_testInstance = false;
@@ -187,7 +191,7 @@ struct Selection {
 std::set<std::wstring> g_picked;
 std::wstring g_anchor;  // target where a Shift range starts
 
-enum class Zone { None, Pin, Plus, Close, Row, RowMore, AddFolder, AddFile, EmptyAdd, EmptyPaste, Notice, NoticeAction, NoticeClose, List };
+enum class Zone { None, Pin, Plus, Gear, Close, Row, RowMore, AddFolder, AddFile, EmptyAdd, EmptyPaste, Notice, NoticeAction, NoticeClose, List };
 struct Hit {
     Zone zone = Zone::None;
     int row = -1;  // Row/RowMore: index into g_rows; NoticeAction: action index
@@ -204,7 +208,7 @@ struct Layout {
     float W = 0, H = 0, listTop = 0, listBottom = 0, contentH = 0, fieldTop = 0;
     D2D1_RECT_F clock{};  // empty when the clock is off
     bool clockAtTop = true;
-    D2D1_RECT_F pin{}, plus{}, close{}, field{}, addFolder{}, addFile{}, hint{}, emptyAdd{}, emptyPaste{};
+    D2D1_RECT_F pin{}, plus{}, gear{}, close{}, field{}, addFolder{}, addFile{}, hint{}, emptyAdd{}, emptyPaste{};
     std::vector<float> rowTop;
 } L;
 
@@ -561,8 +565,9 @@ void Relayout() {
     L.H = Dip(rc.bottom);
     float bx = L.W - 8 - 28;
     L.close = {bx, 4, bx + 28, 32};
-    L.plus = {bx - 30, 4, bx - 2, 32};
-    L.pin = {bx - 60, 4, bx - 32, 32};
+    L.gear = {bx - 30, 4, bx - 2, 32};
+    L.plus = {bx - 60, 4, bx - 32, 32};
+    L.pin = {bx - 90, 4, bx - 62, 32};
     // Optional clock: design and position are chosen separately (under the header or under the list).
     const ql::Settings& s = g_store.settings;
     float ch = s.clock == L"large" ? kClockLargeH : s.clock == L"card" ? kClockCardH : s.clock == L"line" ? kClockLineH : 0.f;
@@ -1226,7 +1231,7 @@ LRESULT CALLBACK SliderProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         ReleaseCapture();
         InvalidateRect(h, nullptr, FALSE);
         return 0;
-    case WM_MOUSEWHEEL: SliderSet(Transparency() + (GET_WHEEL_DELTA_WPARAM(w) > 0 ? 1 : -1)); return 0;
+    case WM_MOUSEWHEEL: SliderSet(Transparency() + (GET_WHEEL_DELTA_WPARAM(w) > 0 ? -1 : 1)); return 0;  // up = more solid
     case WM_KEYDOWN:
         switch (w) {
         case VK_LEFT:
@@ -1283,6 +1288,335 @@ void ShowTransparencySlider(POINT at) {
     if (!g_testInstance) SetForegroundWindow(g_slider);
 }
 
+// ---- Windows 시작 시 실행: HKCU\...\Run "QuickLinks" = "<exe>" --startup -------------------------
+
+constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+bool g_testRunAtLogon = false;  // test instances keep the switch here and never touch the registry
+
+std::wstring RunCommand() {
+    wchar_t exe[MAX_PATH * 2];
+    GetModuleFileNameW(nullptr, exe, (DWORD)(sizeof exe / sizeof exe[0]));
+    return L"\"" + std::wstring(exe) + L"\" --startup";
+}
+
+std::wstring RunValue() {
+    wchar_t buf[MAX_PATH * 3];
+    DWORD size = sizeof buf;
+    if (RegGetValueW(HKEY_CURRENT_USER, kRunKey, kAppName, RRF_RT_REG_SZ, nullptr, buf, &size) != ERROR_SUCCESS) return L"";
+    return buf;
+}
+
+bool RunAtLogon() { return g_testInstance ? g_testRunAtLogon : !RunValue().empty(); }
+
+bool SetRunAtLogon(bool on) {
+    if (g_testInstance) {
+        g_testRunAtLogon = on;
+        return true;
+    }
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return false;
+    LSTATUS r;
+    if (on) {
+        std::wstring cmd = RunCommand();
+        r = RegSetValueExW(key, kAppName, 0, REG_SZ, (const BYTE*)cmd.c_str(), (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+    } else {
+        r = RegDeleteValueW(key, kAppName);
+        if (r == ERROR_FILE_NOT_FOUND) r = ERROR_SUCCESS;
+    }
+    RegCloseKey(key);
+    return r == ERROR_SUCCESS;
+}
+
+// The exe was moved since the switch was turned on: point the entry at this copy.
+void RefreshRunAtLogon() {
+    if (g_testInstance) return;
+    std::wstring v = RunValue();
+    if (!v.empty() && _wcsicmp(v.c_str(), RunCommand().c_str()) != 0) SetRunAtLogon(true);
+}
+
+// ---- settings window (트레이 "설정…" / 머리글 톱니) -------------------------------------------
+// Windows 11 Settings-style cards. Changes apply at once; there is no save button.
+
+void OnCommand(int id);
+
+constexpr wchar_t kSettingsClass[] = L"QuickLinksSettings";
+constexpr float kSetW = 380, kSetH = 532, kSetHeaderH = 40, kCardH = 52, kCardGap = 4, kSectionH = 30;
+ID2D1DCRenderTarget* g_setRt;
+ID2D1SolidColorBrush* g_setBrush;
+
+enum : int { kSetClose = 1, kDdOpenOn, kDdTheme, kDdClock, kDdClockPos };  // + toggles use IDM_* ids
+struct SetControl {
+    D2D1_RECT_F r;
+    int id;
+    bool enabled;
+};
+std::vector<SetControl> g_setControls;  // filled while painting
+int g_setHot = 0, g_setPressed = 0;
+
+float SetScale() { return GetDpiForWindow(g_settingsWnd) / 96.f; }
+
+void PaintToggle(const D2D1_RECT_F& r, bool on, bool enabled, bool hot) {
+    D2D1_COLOR_F accent = enabled ? g_theme.accent : g_theme.underline;
+    float cy = (r.top + r.bottom) / 2;
+    D2D1_RECT_F track{r.right - 40, cy - 10, r.right, cy + 10};
+    if (on) {
+        Fill(track, hot ? Fade(accent, .9f) : accent, 10);
+    } else {
+        if (hot && enabled) Fill(track, g_theme.hover, 10);
+        Stroke(track, enabled ? g_theme.text2 : g_theme.underline, 10);
+    }
+    float knob = hot && enabled ? 7.f : 6.f;
+    g_brush->SetColor(on ? g_theme.onAccent : (enabled ? g_theme.text2 : g_theme.underline));
+    g_rt->FillEllipse(D2D1::Ellipse({on ? track.right - 10 : track.left + 10, cy}, knob, knob), g_brush);
+    Text(on ? L"켬" : L"끔", g_fCaption, {track.left - 30, r.top, track.left - 8, r.bottom}, enabled ? g_theme.text2 : g_theme.text3);
+}
+
+void PaintDropdown(const D2D1_RECT_F& r, const std::wstring& value, bool enabled, bool hot) {
+    Fill(r, g_theme.button, 4);
+    Stroke(r, g_theme.buttonBorder, 4);
+    if (hot && enabled) Fill(r, g_theme.hover, 4);
+    D2D1_COLOR_F c = enabled ? g_theme.text : g_theme.text3;
+    Text(value, g_fCaption, {r.left + 10, r.top, r.right - 26, r.bottom}, c);
+    Glyph(0xE70D, g_fGlyph12, {r.right - 24, r.top, r.right - 6, r.bottom}, enabled ? g_theme.text2 : g_theme.text3);
+}
+
+void PaintSettings() {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(g_settingsWnd, &ps);
+    RECT rc;
+    GetClientRect(g_settingsWnd, &rc);
+    if (!g_setRt) {
+        auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                                                  D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+        g_d2d->CreateDCRenderTarget(&props, &g_setRt);
+        g_setRt->CreateSolidColorBrush(g_theme.text, &g_setBrush);
+    }
+    // Same trick as the slider: borrow the drawing helpers for this window's target.
+    ID2D1DCRenderTarget* mainRt = g_rt;
+    ID2D1SolidColorBrush* mainBrush = g_brush;
+    g_rt = g_setRt;
+    g_brush = g_setBrush;
+    float dpi = (float)GetDpiForWindow(g_settingsWnd);
+    g_rt->BindDC(dc, &rc);
+    g_rt->SetDpi(dpi, dpi);
+    g_rt->BeginDraw();
+    g_rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+    g_rt->Clear(g_theme.bg);
+    g_setControls.clear();
+
+    const ql::Settings& s = g_store.settings;
+    Glyph(kGlyphSettings, g_fGlyph16, {10, 6, 32, 34}, g_theme.accent);
+    Text(g_testInstance ? L"설정 (테스트)" : L"설정", g_fItem, {38, 0, kSetW - 50, kSetHeaderH}, g_theme.text);
+    D2D1_RECT_F close{kSetW - 40, 6, kSetW - 10, 34};
+    if (g_setHot == kSetClose) Fill(close, Hex(0xC42B1C), 4);
+    Glyph(kGlyphChromeClose, g_fGlyph12, close, g_setHot == kSetClose ? Hex(0xFFFFFF) : g_theme.text2);
+    g_setControls.push_back({close, kSetClose, true});
+
+    float y = kSetHeaderH;
+    auto section = [&](const wchar_t* title) {
+        Text(title, g_fCaptionBold, {18, y + 6, kSetW - 18, y + kSectionH}, g_theme.text2);
+        y += kSectionH;
+    };
+    // One card row: title, optional description, and a control on the right.
+    auto card = [&](wchar_t glyph, const wchar_t* title, const wchar_t* desc, bool enabled) {
+        D2D1_RECT_F c{12, y, kSetW - 12, y + kCardH};
+        Fill(c, g_theme.info, 4);
+        Stroke(c, g_theme.infoBorder, 4);
+        D2D1_COLOR_F tc = enabled ? g_theme.text : g_theme.text3;
+        Glyph(glyph, g_fGlyph16, {c.left + 10, c.top, c.left + 34, c.bottom}, enabled ? g_theme.text2 : g_theme.text3);
+        if (desc && *desc) {
+            Text(title, g_fItem, {c.left + 44, c.top + 7, c.right - 170, c.top + 27}, tc);
+            Text(desc, g_fCaption, {c.left + 44, c.top + 27, c.right - 170, c.top + 45}, g_theme.text3);
+        } else {
+            Text(title, g_fItem, {c.left + 44, c.top, c.right - 170, c.bottom}, tc);
+        }
+        y += kCardH + kCardGap;
+        return c;
+    };
+    auto dropdown = [&](const D2D1_RECT_F& c, int id, const std::wstring& value, bool enabled) {
+        D2D1_RECT_F r{c.right - 166, c.top + 11, c.right - 12, c.bottom - 11};
+        PaintDropdown(r, value, enabled, g_setHot == id);
+        g_setControls.push_back({r, id, enabled});
+    };
+    auto toggle = [&](const D2D1_RECT_F& c, int id, bool on, bool enabled) {
+        D2D1_RECT_F r{c.right - 96, c.top, c.right - 14, c.bottom};
+        PaintToggle(r, on, enabled, g_setHot == id);
+        g_setControls.push_back({r, id, enabled});
+    };
+
+    section(L"일반");
+    D2D1_RECT_F c = card(0xE962 /* Mouse */, L"여는 방법", L"항목을 열 때 클릭 횟수", true);
+    dropdown(c, kDdOpenOn, s.doubleClick ? L"두 번 클릭" : L"한 번 클릭", true);
+    c = card(0xE7E8 /* Power */, L"Windows 시작 시 실행", L"로그인하면 위젯을 띄움", true);
+    toggle(c, IDM_RUNATLOGON, RunAtLogon(), true);
+
+    section(L"모양");
+    c = card(0xE790 /* Color */, L"테마", L"밝게·어둡게", true);
+    dropdown(c, kDdTheme, s.theme == L"light" ? L"라이트" : s.theme == L"dark" ? L"다크" : L"Windows 설정 따르기", true);
+
+    section(L"시계");
+    bool clockOn = s.clock != L"off";
+    c = card(0xE823 /* Clock */, L"시계", L"위젯에 날짜와 시간 표시", true);
+    dropdown(c, kDdClock,
+             s.clock == L"large" ? L"큰 숫자" : s.clock == L"line" ? L"한 줄 (날짜 · 시간)" : s.clock == L"card" ? L"아날로그 카드" : L"끄기",
+             true);
+    c = card(0xE8FD /* list layout */, L"위치", nullptr, clockOn);
+    dropdown(c, kDdClockPos, s.clockPosition == L"bottom" ? L"아래 (목록 아래)" : L"위 (제목 아래)", clockOn);
+    c = card(0xE823 /* Clock */, L"24시간제", nullptr, clockOn);
+    toggle(c, IDM_CLOCK_24H, s.clock24, clockOn);
+    c = card(0xE916 /* Stopwatch */, L"초 표시", nullptr, clockOn);
+    toggle(c, IDM_CLOCK_SECONDS, s.clockSeconds, clockOn);
+
+    HRESULT hr = g_rt->EndDraw();
+    g_rt = mainRt;
+    g_brush = mainBrush;
+    if (hr == D2DERR_RECREATE_TARGET) {
+        g_setBrush->Release(), g_setBrush = nullptr;
+        g_setRt->Release(), g_setRt = nullptr;
+        InvalidateRect(g_settingsWnd, nullptr, FALSE);
+    }
+    EndPaint(g_settingsWnd, &ps);
+}
+
+int SettingsHit(LPARAM l) {
+    float x = GET_X_LPARAM(l) / SetScale(), y = GET_Y_LPARAM(l) / SetScale();
+    for (auto& c : g_setControls)
+        if (c.enabled && In(c.r, x, y)) return c.id;
+    return 0;
+}
+
+// A dropdown is a popup menu under its button; the chosen command goes through OnCommand.
+void SettingsDropdown(int id) {
+    const ql::Settings& s = g_store.settings;
+    HMENU m = CreatePopupMenu();
+    auto item = [&](int cmd, const wchar_t* label, bool checked) {
+        AppendMenuW(m, MF_STRING | (checked ? MF_CHECKED : 0), cmd, label);
+    };
+    if (id == kDdOpenOn) {
+        item(IDM_SINGLECLICK, L"한 번 클릭", !s.doubleClick);
+        item(IDM_DOUBLECLICK, L"두 번 클릭", s.doubleClick);
+    } else if (id == kDdTheme) {
+        item(IDM_THEME_SYSTEM, L"Windows 설정 따르기", s.theme == L"system");
+        item(IDM_THEME_LIGHT, L"라이트", s.theme == L"light");
+        item(IDM_THEME_DARK, L"다크", s.theme == L"dark");
+    } else if (id == kDdClock) {
+        item(IDM_CLOCK_OFF, L"끄기", s.clock == L"off");
+        item(IDM_CLOCK_LARGE, L"큰 숫자", s.clock == L"large");
+        item(IDM_CLOCK_LINE, L"한 줄 (날짜 · 시간)", s.clock == L"line");
+        item(IDM_CLOCK_CARD, L"아날로그 카드", s.clock == L"card");
+    } else if (id == kDdClockPos) {
+        item(IDM_CLOCK_TOP, L"위 (제목 아래)", s.clockPosition != L"bottom");
+        item(IDM_CLOCK_BOTTOM, L"아래 (목록 아래)", s.clockPosition == L"bottom");
+    }
+    for (auto& c : g_setControls)
+        if (c.id == id) {
+            POINT p{(LONG)std::lround(c.r.left * SetScale()), (LONG)std::lround(c.r.bottom * SetScale())};
+            ClientToScreen(g_settingsWnd, &p);
+            int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTBUTTON, p.x, p.y + 2, 0, g_settingsWnd, nullptr);
+            if (cmd) OnCommand(cmd);
+            break;
+        }
+    DestroyMenu(m);
+    g_setHot = 0;
+    InvalidateRect(g_settingsWnd, nullptr, FALSE);
+}
+
+void CloseSettings() {
+    if (!g_settingsWnd) return;
+    HWND w = g_settingsWnd;
+    g_settingsWnd = nullptr;
+    DestroyWindow(w);
+    InvalidateRect(g_wnd, nullptr, FALSE);  // the gear loses its "open" color
+}
+
+LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_NCCALCSIZE:
+        if (w) return 0;
+        break;
+    case WM_NCHITTEST: {
+        POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+        ScreenToClient(h, &p);
+        float x = p.x / SetScale(), y = p.y / SetScale();
+        return y < kSetHeaderH && x < kSetW - 44 ? HTCAPTION : HTCLIENT;  // drag by the header, no resizing
+    }
+    case WM_NCRBUTTONUP: return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT:
+        if (h == g_settingsWnd) PaintSettings();
+        else ValidateRect(h, nullptr);
+        return 0;
+    case WM_MOUSEMOVE: {
+        int hot = SettingsHit(l);
+        if (hot != g_setHot) {
+            g_setHot = hot;
+            TRACKMOUSEEVENT t{sizeof t, TME_LEAVE, h, 0};
+            TrackMouseEvent(&t);
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        g_setHot = 0;
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+    case WM_LBUTTONDOWN: g_setPressed = SettingsHit(l); return 0;
+    case WM_LBUTTONUP: {
+        int id = SettingsHit(l);
+        if (!id || id != g_setPressed) return 0;
+        g_setPressed = 0;
+        if (id == kSetClose) CloseSettings();
+        else if (id >= kDdOpenOn && id <= kDdClockPos) SettingsDropdown(id);
+        else OnCommand(id);  // toggles
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (w == VK_ESCAPE) CloseSettings();
+        return 0;
+    case WM_CLOSE: CloseSettings(); return 0;
+    case WM_DESTROY:
+        if (g_setBrush) g_setBrush->Release(), g_setBrush = nullptr;
+        if (g_setRt) g_setRt->Release(), g_setRt = nullptr;
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+void ApplySettingsTheme() {
+    if (!g_settingsWnd) return;
+    BOOL dark = g_theme.dark;
+    DwmSetWindowAttribute(g_settingsWnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
+    InvalidateRect(g_settingsWnd, nullptr, FALSE);
+}
+
+// Opens beside the widget (left if there is room, else right), or brings it forward when open.
+void OpenSettings() {
+    if (g_settingsWnd) {
+        if (!g_testInstance) SetForegroundWindow(g_settingsWnd);
+        return;
+    }
+    RECT wr;
+    GetWindowRect(g_wnd, &wr);
+    HMONITOR mon = MonitorFromRect(&wr, MONITOR_DEFAULTTONEAREST);
+    UINT dx = 96, dy = 96;
+    GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &dx, &dy);
+    int w = (int)std::lround(kSetW * dx / 96.f), h = (int)std::lround(kSetH * dx / 96.f), gap = (int)std::lround(8 * dx / 96.f);
+    MONITORINFO mi{sizeof mi};
+    GetMonitorInfoW(mon, &mi);
+    int x = wr.left - w - gap >= mi.rcWork.left ? wr.left - w - gap : wr.right + gap;
+    x = std::clamp(x, (int)mi.rcWork.left, (int)mi.rcWork.right - w);
+    int y = std::clamp((int)wr.top, (int)mi.rcWork.top, (int)mi.rcWork.bottom - h);
+    g_setHot = g_setPressed = 0;
+    g_settingsWnd = CreateWindowExW(WS_EX_TOOLWINDOW, kSettingsClass, L"QuickLinks 설정", WS_POPUP | WS_THICKFRAME, x, y,
+                                    w, h, g_wnd, nullptr, g_inst, nullptr);
+    int corner = 2;  // DWMWCP_ROUND
+    DwmSetWindowAttribute(g_settingsWnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corner, sizeof corner);
+    ApplySettingsTheme();
+    ShowWindow(g_settingsWnd, g_testInstance ? SW_SHOWNOACTIVATE : SW_SHOW);
+    if (!g_testInstance) SetForegroundWindow(g_settingsWnd);
+    InvalidateRect(g_wnd, nullptr, FALSE);
+}
+
 // --theme (tests) wins, then the Theme setting, then Windows' app mode.
 bool UseDark() {
     if (g_forceTheme >= 0) return g_forceTheme == 1;
@@ -1302,6 +1636,7 @@ void ApplyTheme() {
     for (HWND e : {g_search, g_addEdit, g_renameEdit})
         if (e) SetWindowTheme(e, g_theme.dark ? L"DarkMode_Explorer" : nullptr, nullptr);
     InvalidateRect(g_wnd, nullptr, TRUE);
+    ApplySettingsTheme();
 }
 
 void CreateEditFonts() {
@@ -1447,6 +1782,7 @@ void PaintHeader() {
          g_store.settings.topmost ? g_theme.accent : g_theme.text2},
         // While the add row is open the + stays and looks pressed, so there is only one ✕ in the bar.
         {L.plus, Zone::Plus, kGlyphAdd, g_addOpen ? g_theme.accent : g_theme.text2},
+        {L.gear, Zone::Gear, kGlyphSettings, g_settingsWnd ? g_theme.accent : g_theme.text2},
         {L.close, Zone::Close, kGlyphChromeClose, g_theme.text2},
     };
     for (auto& b : buttons) {
@@ -1863,6 +2199,7 @@ Hit HitTest(float x, float y) {
     }
     if (In(L.pin, x, y)) return {Zone::Pin};
     if (In(L.plus, x, y)) return {Zone::Plus};
+    if (In(L.gear, x, y)) return {Zone::Gear};
     if (In(L.close, x, y)) return {Zone::Close};
     if (g_addOpen && In(L.addFolder, x, y)) return {Zone::AddFolder};
     if (g_addOpen && In(L.addFile, x, y)) return {Zone::AddFile};
@@ -1977,39 +2314,14 @@ void ListMenu(POINT screen) {
 }
 
 void TrayMenu(POINT screen) {
+    // Kept short: the rest (open on, theme, clock, start with Windows) lives in the settings window.
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, IDM_TOGGLE, IsWindowVisible(g_wnd) ? L"위젯 숨기기" : L"위젯 보이기");
     AppendMenuW(m, MF_STRING | (g_store.settings.topmost ? MF_CHECKED : 0), IDM_TOPMOST, L"항상 위");
-    HMENU open = CreatePopupMenu();
-    AppendMenuW(open, MF_STRING | (!g_store.settings.doubleClick ? MF_CHECKED : 0), IDM_SINGLECLICK, L"한 번 클릭");
-    AppendMenuW(open, MF_STRING | (g_store.settings.doubleClick ? MF_CHECKED : 0), IDM_DOUBLECLICK, L"두 번 클릭");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)open, L"여는 방법");
-    HMENU theme = CreatePopupMenu();
-    const std::wstring& t = g_store.settings.theme;
-    AppendMenuW(theme, MF_STRING | (t == L"system" ? MF_CHECKED : 0), IDM_THEME_SYSTEM, L"Windows 설정 따르기");
-    AppendMenuW(theme, MF_STRING | (t == L"light" ? MF_CHECKED : 0), IDM_THEME_LIGHT, L"라이트");
-    AppendMenuW(theme, MF_STRING | (t == L"dark" ? MF_CHECKED : 0), IDM_THEME_DARK, L"다크");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)theme, L"테마");
-    HMENU clock = CreatePopupMenu();
-    const std::wstring& c = g_store.settings.clock;
-    // Design and position are separate choices.
-    AppendMenuW(clock, MF_STRING | (c == L"off" ? MF_CHECKED : 0), IDM_CLOCK_OFF, L"끄기");
-    AppendMenuW(clock, MF_STRING | (c == L"large" ? MF_CHECKED : 0), IDM_CLOCK_LARGE, L"큰 숫자");
-    AppendMenuW(clock, MF_STRING | (c == L"line" ? MF_CHECKED : 0), IDM_CLOCK_LINE, L"한 줄 (날짜 · 시간)");
-    AppendMenuW(clock, MF_STRING | (c == L"card" ? MF_CHECKED : 0), IDM_CLOCK_CARD, L"아날로그 카드");
-    AppendMenuW(clock, MF_SEPARATOR, 0, nullptr);
-    UINT off = c == L"off" ? MF_GRAYED : 0;
-    bool top = g_store.settings.clockPosition != L"bottom";
-    AppendMenuW(clock, MF_STRING | off | (top ? MF_CHECKED : 0), IDM_CLOCK_TOP, L"위치: 위 (제목 아래)");
-    AppendMenuW(clock, MF_STRING | off | (!top ? MF_CHECKED : 0), IDM_CLOCK_BOTTOM, L"위치: 아래 (목록 아래)");
-    AppendMenuW(clock, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(clock, MF_STRING | off | (g_store.settings.clock24 ? MF_CHECKED : 0), IDM_CLOCK_24H, L"24시간제");
-    AppendMenuW(clock, MF_STRING | off | (g_store.settings.clockSeconds ? MF_CHECKED : 0), IDM_CLOCK_SECONDS, L"초 표시");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)clock, L"시계");
     // Shown as transparency (0% = solid); the ini keeps Opacity = 100 - transparency.
     int current = Transparency();
-    std::wstring see = L"투명도… (" + (current ? std::to_wstring(current) + L"%" : std::wstring(L"끔")) + L")";
+    std::wstring see = L"투명도 " + std::to_wstring(current) + L"%";  // opens the slider
     AppendMenuW(m, MF_STRING, IDM_TRANSPARENCY, see.c_str());
+    AppendMenuW(m, MF_STRING, IDM_SETTINGS, L"설정");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"종료");
     SetForegroundWindow(g_wnd);
@@ -2247,6 +2559,10 @@ void OnCommand(int id) {
         InvalidateRect(g_wnd, nullptr, FALSE);
         break;
     }
+    case IDM_SETTINGS: OpenSettings(); break;
+    case IDM_RUNATLOGON:
+        if (!SetRunAtLogon(!RunAtLogon())) ShowInfo(L"시작 시 실행을 바꾸지 못했어요");
+        break;
     case IDM_TRANSPARENCY:
         ShowTransparencySlider(g_menuPoint);
         g_menuPoint = {};
@@ -2276,6 +2592,7 @@ void OnCommand(int id) {
             MoveSelected(g, -1);
         }
     }
+    if (g_settingsWnd) InvalidateRect(g_settingsWnd, nullptr, FALSE);  // its switches mirror these settings
 }
 
 void OnNoticeAction(int id) {
@@ -2363,6 +2680,7 @@ void OnLButtonUp(POINT p) {
     switch (h.zone) {
     case Zone::Pin: OnCommand(IDM_TOPMOST); break;
     case Zone::Plus: SetAddOpen(!g_addOpen); break;
+    case Zone::Gear: OnCommand(IDM_SETTINGS); break;
     case Zone::Close: ShowWidget(false); break;
     case Zone::AddFolder: PickAndAdd(true); break;
     case Zone::AddFile: PickAndAdd(false); break;
@@ -2436,7 +2754,9 @@ LRESULT HitTestNc(LPARAM lp) {
     if (top) return HTTOP;
     if (bottom) return HTBOTTOM;
     float x = Dip(p.x), y = Dip(p.y);
-    if (y < kHeaderH && !In(L.pin, x, y) && !In(L.plus, x, y) && !In(L.close, x, y)) return HTCAPTION;
+    if (y < kHeaderH && !In(L.pin, x, y) && !In(L.plus, x, y) && !In(L.gear, x, y) &&
+        !In(L.close, x, y))
+        return HTCAPTION;
     if (In(L.clock, x, y)) return HTCAPTION;  // the clock moves the widget too
     return HTCLIENT;
 }
@@ -2468,9 +2788,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         break;
     case WM_NCHITTEST: return HitTestNc(l);
     case WM_NCRBUTTONDOWN: return 0;
-    case WM_NCRBUTTONUP:  // the title bar: same menu as the tray icon
-        if (w == HTCAPTION) TrayMenu({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
-        return 0;
+    case WM_NCRBUTTONUP: return 0;  // no menu on the title bar: settings are behind the gear button
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: Paint(); return 0;
     case WM_SIZE:
@@ -2580,14 +2898,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else GroupMenu(r.group, p);
         } else if (hit.zone == Zone::List) {
             ListMenu(p);
-        } else if (Dip(GET_Y_LPARAM(l)) < kHeaderH) {
-            TrayMenu(p);  // header buttons area: same as the title bar
         }
         return 0;
     }
     case WM_MOUSEWHEEL: {
-        if (GET_KEYSTATE_WPARAM(w) & MK_CONTROL) {  // Ctrl+wheel: 1% per notch, up = more see-through (as the slider)
-            SetTransparency(Transparency() + (GET_WHEEL_DELTA_WPARAM(w) > 0 ? 1 : -1), true);
+        if (GET_KEYSTATE_WPARAM(w) & MK_CONTROL) {  // Ctrl+wheel: 1% per notch, up = more solid (as the slider)
+            SetTransparency(Transparency() + (GET_WHEEL_DELTA_WPARAM(w) > 0 ? -1 : 1), true);
             return 0;
         }
         CommitRename(true);
@@ -2756,6 +3072,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         }
     for (int i = 1; i < argc; ++i)
         if (!wcscmp(argv[i], L"--win10-fonts")) g_forceWin10Fonts = true;
+        else if (!wcscmp(argv[i], L"--startup")) g_startup = true;
     LocalFree(argv);
 
     HANDLE mutex = nullptr;
@@ -2800,6 +3117,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     wc.lpfnWndProc = SliderProc;
     wc.lpszClassName = kSliderClass;
     RegisterClassExW(&wc);
+    wc.lpfnWndProc = SettingsProc;
+    wc.lpszClassName = kSettingsClass;
+    RegisterClassExW(&wc);
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
 
     RECT r = InitialRect();
@@ -2841,9 +3161,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     RequestIcons();
     SetTimer(g_wnd, kRecheckTimer, kRecheckMs, nullptr);
     ScheduleClock();
+    RefreshRunAtLogon();
 
     // A test instance must not take the keyboard from whatever the user is typing into.
-    ShowWindow(g_wnd, g_testInstance ? SW_SHOWNOACTIVATE : SW_SHOW);
+    // At logon (--startup) the widget appears without taking focus from what the user opens first.
+    ShowWindow(g_wnd, g_testInstance || g_startup ? SW_SHOWNOACTIVATE : SW_SHOW);
     UpdateWindow(g_wnd);
 
     MSG msg;
