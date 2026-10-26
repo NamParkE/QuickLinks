@@ -1,0 +1,8 @@
+# Build output (also holds test tools: QuickLinks.exe, qltool.exe, mica_spike.exe)
+build/
+*.obj
+*.res
+*.pdb
+*.ilk
+.vs/
+.vscode/
