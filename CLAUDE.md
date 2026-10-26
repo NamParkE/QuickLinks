@@ -2,7 +2,7 @@
 
 자주 쓰는 폴더·파일·웹 주소 바로가기 위젯. C++ Win32 + Direct2D/DirectWrite, MSVC, 외부 라이브러리 없음, 한국어 UI. 사용법은 [README.md](README.md), 설계와 모든 결정(시안 선택 이유 포함)은 [docs/설계.md](docs/설계.md).
 
-- 저장소: https://github.com/NamParkE/QuickLinks (비공개, `main`). 릴리즈: v0.1.0 (2026-10-26)
+- 저장소: https://github.com/NamParkE/QuickLinks (비공개, `main`). 릴리즈: v0.1.0, v0.2.0, v0.2.1 (모두 2026-10-26)
 - 로컬: `C:\Users\Administrator\WorkApps\QuickLinks`
 - 커밋 메시지는 한국어. 커밋·푸시·릴리즈는 사용자가 요청할 때만.
 - 형제 프로젝트: `..\ScanReceiver`(같은 C++ Win32 방식, 코드 스타일 참고), `..\ScreenShot`(C# WPF)
@@ -71,6 +71,8 @@ tests\run_tests.bat            :: 92 passed, 0 failed 여야 함. 끝나면 buil
 - **저장**: 바뀔 때마다 ini 전체를 임시 파일에 쓰고 `MoveFileEx`로 교체(UTF-16 LE BOM).
 
 ## 함정 (실제로 겪은 것)
+
+- **트레이 아이콘(NOTIFYICON_VERSION_4)은 클릭 한 번에 `WM_LBUTTONUP`과 `NIN_SELECT`를 둘 다 보냄** → 둘 다에서 보이기/숨기기를 뒤집으면 숨긴 위젯이 트레이 클릭·더블클릭으로 다시 안 뜸(0.2.0까지의 버그). 지금은 `NIN_SELECT`에서만 뒤집고, 더블클릭 시간 안의 두 번째 선택은 무시, `WM_LBUTTONDBLCLK`는 항상 보이기. 시험은 테스트 창에 `WM_APP+3`(트레이 메시지)을 `lParam`=이벤트로 보내 `IsWindowVisible`로 확인.
 
 - **끌기 중 `ReleaseCapture()`를 먼저 부르면 `WM_CAPTURECHANGED`가 끌기를 취소**해 버림 → 목록 안 끌기가 한 번도 적용되지 않았던 버그(2026-10-26 수정). `OnLButtonUp`은 `FinishDrag()`(상태를 비운 뒤 캡처 해제)를 먼저.
 - 설정 창(`QuickLinksSettings`)도 같은 방식으로 `g_rt`를 빌려 그림. 컨트롤은 `g_setControls`(그릴 때 채움)로 히트 테스트, 드롭다운은 `TrackPopupMenu` → `OnCommand`. `OnCommand` 끝에서 설정 창을 다시 그려 메뉴·단축키로 바꾼 값과 맞춤.

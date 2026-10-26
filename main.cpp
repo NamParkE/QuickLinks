@@ -1064,8 +1064,8 @@ void SaveWindowRect() {
 
 void ShowWidget(bool show) {
     if (show) {
-        ShowWindow(g_wnd, SW_SHOW);
-        SetForegroundWindow(g_wnd);
+        ShowWindow(g_wnd, g_testInstance ? SW_SHOWNOACTIVATE : SW_SHOW);
+        if (!g_testInstance) SetForegroundWindow(g_wnd);
         RequestIcons();
     } else {
         CommitRename(true);
@@ -2979,14 +2979,22 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         delete target;
         return 0;
     }
-    case WM_APP_TRAY:
+    case WM_APP_TRAY: {
+        // Version 4 icons send WM_LBUTTONUP *and* NIN_SELECT for one click, and a double-click is two
+        // clicks plus WM_LBUTTONDBLCLK: toggle on NIN_SELECT only, and let a double-click always show.
+        static DWORD lastToggle = 0;
         switch (LOWORD(l)) {
-        case WM_LBUTTONUP:
         case NIN_SELECT:
-        case NIN_KEYSELECT: ShowWidget(!IsWindowVisible(h)); break;
+        case NIN_KEYSELECT:
+            if (GetTickCount() - lastToggle < GetDoubleClickTime()) break;  // second half of a double-click
+            lastToggle = GetTickCount();
+            ShowWidget(!IsWindowVisible(h));
+            break;
+        case WM_LBUTTONDBLCLK: ShowWidget(true); break;
         case WM_CONTEXTMENU: TrayMenu({GET_X_LPARAM(w), GET_Y_LPARAM(w)}); break;
         }
         return 0;
+    }
     case WM_APP_SHOW: ShowWidget(true); return 0;
     case WM_TIMECHANGE:
         InvalidateClock();
