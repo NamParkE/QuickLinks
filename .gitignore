@@ -1,5 +1,7 @@
 # Build output (also holds test tools: QuickLinks.exe, qltool.exe, mica_spike.exe)
 build/
+# Release zips (uploaded to GitHub Releases, not kept in git)
+dist/
 *.obj
 *.res
 *.pdb
